@@ -1,20 +1,76 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
-
-export default function App() {
-  return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
-  );
+import React, {useEffect, useRef, useState} from 'react';
+import {ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
+import {StatusBar} from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import {ArrowLeft, Plus, Receipt, Camera, Image as ImageIcon, Coffee, ShoppingBasket, CarFront, ShoppingBag, Home, BarChart3, UserRound, Pencil, Calendar, ChevronDown, Trash2, Check} from 'lucide-react-native';
+import {cents, money} from './src/currency';
+import {categories, Draft, Expense, Item, initialExpenses, extractReceipt} from './src/receipt';
+const C={bg:'#F4F1EA',white:'#FFFFFF',navy:'#0F172A',muted:'#64748B',green:'#10B981',dark:'#008765',border:'#DADDD9',mint:'#D9F1E7',red:'#B91C1C'};
+const KEY='koin.expenses.v1';
+const dateLabel=(s:string)=>new Date(s+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+const dateString=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function Button({label,onPress,icon:Icon,small=false,disabled=false}:{label:string;onPress:()=>void;icon:typeof Plus;small?:boolean;disabled?:boolean}){return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={[small?s.secondary:s.primary,disabled&&{opacity:.5}]}><Icon size={18} color={C.navy}/><Text style={s.buttonText}>{label}</Text></Pressable>}
+function Main(){
+ const [expenses,setExpenses]=useState<Expense[]>(initialExpenses);
+ const [ready,setReady]=useState(false);
+ const [draft,setDraft]=useState<Draft|null>(null);
+ const [scan,setScan]=useState<string|null>(null);
+ const [busy,setBusy]=useState(false);
+ const [saving,setSaving]=useState(false);
+ const [error,setError]=useState('');
+ const [categoryOpen,setCategoryOpen]=useState(false);
+ const [dateOpen,setDateOpen]=useState(false);
+ const [preview,setPreview]=useState(false);
+ const [notice,setNotice]=useState('');
+ const merchantRef = useRef<React.ElementRef<typeof TextInput>>(null);
+ const lock=useRef(false);
+ const counter=useRef(0);
+ useEffect(()=>{AsyncStorage.getItem(KEY).then(raw=>{if(raw){const data=JSON.parse(raw);if(Array.isArray(data))setExpenses(data)}}).catch(()=>Alert.alert('Storage','Could not load saved expenses.')).finally(()=>setReady(true));},[]);
+ async function pick(camera:boolean){
+  if(lock.current)return;lock.current=true;setBusy(true);setNotice('');
+  try{
+   if(camera){const permission=await ImagePicker.requestCameraPermissionsAsync();if(!permission.granted){Alert.alert('Camera permission','Allow camera access in Settings or use Gallery.');return;}}
+   const result=camera?await ImagePicker.launchCameraAsync({mediaTypes:['images'],quality:.8}):await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],quality:.8});
+   if(result.canceled)return;
+   const uri=result.assets[0].uri;setScan(uri);const extracted=await extractReceipt(uri);setError('');setDraft(extracted);
+  }catch{Alert.alert('Unable to scan','Please try again or select another image.');}finally{setScan(null);setBusy(false);lock.current=false;}
+ }
+ function patch(p:Partial<Draft>){setDraft(old=>old?{...old,...p}:old);setError('');}
+ function edit(id:string,p:Partial<Item>){setDraft(old=>old?{...old,items:old.items.map(i=>i.id===id?{...i,...p}:i)}:old);setError('');}
+ const total=draft?.items.reduce((sum,i)=>sum+(cents(i.price)??0),0)??0;
+ async function save(){if(!draft||saving||lock.current)return;
+  if(!draft.merchant.trim()){setError('Enter a merchant name.');return;}
+  if(!draft.items.length||draft.items.some(i=>!i.name.trim()||cents(i.price)===null)){setError('Enter an item name and a valid non-negative price (up to 2 decimals) for every item.');return;}
+  if(total<=0){setError('Total amount must be greater than zero.');return;}
+  lock.current=true;setSaving(true);
+  const next=[{id:String(Date.now()),merchant:draft.merchant.trim(),date:dateLabel(draft.date),category:draft.category,total},...expenses];
+  try{await AsyncStorage.setItem(KEY,JSON.stringify(next));setExpenses(next);setDraft(null);setNotice('Expense saved successfully.');}catch{setError('Could not save expense. Please try again.');}finally{setSaving(false);lock.current=false;}
+ }
+ if(draft)return <SafeAreaView style={s.safe} edges={['top','bottom']}><StatusBar style="dark"/><KeyboardAvoidingView style={s.flex} behavior={Platform.OS==='ios'?'padding':undefined}>
+ <View style={s.reviewHeader}><Pressable accessibilityLabel="Back" onPress={()=>{if(!saving){setDraft(null);setDateOpen(false);}}} hitSlop={12}><ArrowLeft size={22} color={C.navy}/></Pressable><Text style={s.reviewTitle}>Review Receipt</Text><Pressable onPress={()=>setPreview(true)} accessibilityLabel="View receipt"><Image source={{uri:draft.uri}} style={s.thumb}/></Pressable></View>
+ <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
+ <View style={s.summary}><Text style={s.label}>Merchant Name</Text><View style={s.row}><TextInput ref={merchantRef} accessibilityLabel="Merchant name" style={[s.merchant,s.flex]} value={draft.merchant} onChangeText={merchant=>patch({merchant})}/><Pressable onPress={()=>merchantRef.current?.focus()} accessibilityLabel="Edit merchant"><Pencil size={17} color={C.muted}/></Pressable></View><View style={s.line}/><View style={s.between}><View><Text style={s.label}>Date</Text><Pressable style={s.inline} onPress={()=>setDateOpen(true)}><Text style={s.body}>{dateLabel(draft.date)}</Text><Calendar size={14} color={C.muted}/></Pressable></View><View><Text style={s.label}>Category</Text><Pressable style={s.pill} onPress={()=>setCategoryOpen(true)}><Text style={s.pillText}>{draft.category}</Text><ChevronDown size={13} color={C.dark}/></Pressable></View></View></View>
+ {dateOpen&&<View style={s.summary}><DateTimePicker value={new Date(draft.date+'T12:00:00')} mode="date" display={Platform.OS==='ios'?'spinner':'default'} onChange={(event,date)=>{if(Platform.OS!=='ios')setDateOpen(false);if(date&&event.type!=='dismissed')patch({date:dateString(date)});}}/>{Platform.OS==='ios'&&<Pressable onPress={()=>setDateOpen(false)}><Text style={s.link}>Done</Text></Pressable>}</View>}
+ <View style={[s.between,{marginTop:26,marginBottom:12}]}><Text style={s.section}>Extracted Items</Text><Text style={s.label}>{draft.items.length} items</Text></View>
+ {draft.items.map(i=><View key={i.id} style={s.item}><TextInput accessibilityLabel="Item name" placeholder="Item name" placeholderTextColor={C.muted} style={[s.body,s.flex,{paddingVertical:10}]} value={i.name} onChangeText={name=>edit(i.id,{name})}/><View style={[s.price,cents(i.price)===null&&{borderColor:C.red}]}><Text style={s.label}>$</Text><TextInput accessibilityLabel={`Price for ${i.name}`} keyboardType="decimal-pad" style={{flex:1,width:0,minWidth:0,fontSize:14,color:'#080F35',textAlign:'right',padding:0}} value={i.price} onChangeText={price=>edit(i.id,{price})}/></View><Pressable accessibilityLabel={`Delete ${i.name}`} hitSlop={10} onPress={()=>patch({items:draft.items.filter(x=>x.id!==i.id)})}><Trash2 size={18} color={C.muted}/></Pressable></View>)}
+ <Pressable style={[s.inline,{marginTop:20}]} onPress={()=>patch({items:[...draft.items,{id:`new-${++counter.current}`,name:'',price:'0.00'}]})}><Plus size={18} color={C.dark}/><Text style={s.link}>Add Item</Text></Pressable><View style={[s.inline,{marginTop:24}]}><Check size={15} color={C.muted}/><Text style={s.label}>All set? Give your items a quick check.</Text></View>
+ </ScrollView><View style={s.footer}><Text style={s.label}>Total Amount</Text><View style={[s.between,{marginBottom:18}]}><Text style={s.total}>${money(total)}</Text><View style={s.inline}><Check size={15} color={C.dark}/><Text style={s.pillText}>{draft.items.length} items</Text></View></View>{!!error&&<Text accessibilityLiveRegion="polite" style={s.error}>{error}</Text>}<Button label={saving?'Saving…':'Confirm & Save Expense'} icon={Check} onPress={save} disabled={saving}/></View>
+ <Modal visible={categoryOpen} transparent animationType="fade" onRequestClose={()=>setCategoryOpen(false)}><View style={s.overlay}><View style={s.dialog}><Text style={s.section}>Select category</Text>{categories.map(category=><Pressable key={category} style={s.option} onPress={()=>{patch({category});setCategoryOpen(false);}}><Text style={s.body}>{category}</Text></Pressable>)}<Pressable onPress={()=>setCategoryOpen(false)}><Text style={s.link}>Cancel</Text></Pressable></View></View></Modal>
+ <Modal visible={preview} transparent onRequestClose={()=>setPreview(false)}><View style={s.overlay}><View style={s.dialog}><Image source={{uri:draft.uri}} style={{width:'100%',height:350}} resizeMode="contain"/><Pressable onPress={()=>setPreview(false)}><Text style={s.link}>Close preview</Text></Pressable></View></View></Modal>
+ </KeyboardAvoidingView></SafeAreaView>;
+ return <SafeAreaView style={s.safe} edges={['top','bottom']}><StatusBar style="dark"/><ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+ <View style={[s.between,{marginBottom:28}]}><View><Text style={s.logo}>KOIN</Text><Text style={s.title}>Expenses</Text></View><Pressable disabled={busy||!ready} style={s.scanButton} onPress={()=>Alert.alert('Scan Bill','Choose a receipt source',[{text:'Camera',onPress:()=>pick(true)},{text:'Gallery',onPress:()=>pick(false)},{text:'Cancel',style:'cancel'}])}><Plus size={18} color={C.navy}/><Text style={s.buttonText}>Scan Bill</Text></Pressable></View>
+ <View style={s.upload}><View style={s.receiptBadge}><Receipt size={23} color={C.dark}/></View><Text style={s.section}>Upload or Snap a Bill</Text><Text style={[s.label,{marginTop:6,marginBottom:13}]}>Less typing. More living.</Text><View style={s.inline}><Button small label="Camera" icon={Camera} disabled={busy||!ready} onPress={()=>pick(true)}/><Button small label="Gallery" icon={ImageIcon} disabled={busy||!ready} onPress={()=>pick(false)}/></View></View>
+ {!!notice&&<Text accessibilityLiveRegion="polite" style={[s.link,{marginTop:12}]}>{notice}</Text>}
+ <View style={[s.between,{marginTop:29,marginBottom:13}]}><Text style={s.section}>Recent Activity</Text><Text style={s.label}>This week</Text></View>
+ {expenses.map((e,index)=>{const n=categories.indexOf(e.category);const Icon=[Coffee,ShoppingBasket,CarFront,ShoppingBag,Receipt][n]||Receipt;return <View key={e.id} style={[s.transaction,index===expenses.length-1&&{borderBottomWidth:0}]}><View style={[s.categoryIcon,{backgroundColor:['#D9F1E7','#EDE5F7','#E2ECF8','#F8EBD9','#E8E8E8'][n]||C.mint}]}><Icon size={22} color={[C.dark,'#8055B5',C.navy,'#B77930',C.muted][n]||C.dark}/></View><View style={s.flex}><Text style={s.body}>{e.merchant}</Text><Text style={[s.label,{marginTop:5}]}>{e.date}</Text></View><Text style={s.amount}>${money(e.total)}</Text></View>})}
+ </ScrollView><View style={s.nav}>{[{name:'Home',icon:Home},{name:'Expenses',icon:Receipt},{name:'Insights',icon:BarChart3},{name:'Profile',icon:UserRound}].map(({name,icon:Icon})=><View key={name} style={s.tab}><Icon size={22} color={name==='Expenses'?C.dark:C.muted}/><Text style={[s.label,{fontSize:10,color:name==='Expenses'?C.dark:C.muted}]}>{name}</Text></View>)}</View>
+ <Modal visible={!!scan} transparent animationType="fade"><View style={s.overlay}><View style={s.dialog}>{scan&&<Image source={{uri:scan}} style={{width:'100%',height:240}} resizeMode="contain"/>}<ActivityIndicator color={C.green} size="large"/><Text style={s.section}>Scanning receipt…</Text><Text style={s.label}>Preparing sample extracted items</Text></View></View></Modal></SafeAreaView>;
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+export default function App(){return <SafeAreaProvider><Main/></SafeAreaProvider>}
+const s=StyleSheet.create({
+ safe:{flex:1,backgroundColor:C.bg},flex:{flex:1},content:{paddingHorizontal:24,paddingTop:12,paddingBottom:18},row:{flexDirection:'row',alignItems:'center'},inline:{flexDirection:'row',alignItems:'center',gap:8},between:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},logo:{fontSize:10,fontWeight:'700',letterSpacing:2.5,color:C.dark,marginBottom:4},title:{fontSize:29,fontWeight:'700',color:C.navy},section:{fontSize:18,fontWeight:'600',color:C.navy},label:{fontSize:12,color:C.muted},body:{fontSize:14,color:C.navy},buttonText:{fontSize:13,fontWeight:'600',color:C.navy},scanButton:{flexDirection:'row',alignItems:'center',gap:6,backgroundColor:C.green,borderRadius:30,paddingHorizontal:17,height:42},upload:{backgroundColor:C.white,borderWidth:1,borderStyle:'dashed',borderColor:'#91CDB9',borderRadius:24,minHeight:218,alignItems:'center',justifyContent:'center',padding:20},receiptBadge:{width:44,height:44,borderRadius:15,backgroundColor:C.mint,alignItems:'center',justifyContent:'center',marginBottom:13},secondary:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8,backgroundColor:C.bg,borderColor:C.border,borderWidth:1,borderRadius:11,paddingHorizontal:17,height:40},primary:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8,backgroundColor:C.green,borderRadius:14,minHeight:54},transaction:{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:13,borderBottomWidth:1,borderColor:C.border},categoryIcon:{width:44,height:44,borderRadius:15,alignItems:'center',justifyContent:'center'},amount:{fontSize:14,fontWeight:'600',color:C.navy,fontVariant:['tabular-nums']},nav:{flexDirection:'row',backgroundColor:C.white,borderTopWidth:1,borderColor:C.border,paddingVertical:18,paddingHorizontal:8},tab:{flex:1,alignItems:'center',gap:6},reviewHeader:{flexDirection:'row',alignItems:'center',paddingHorizontal:24,paddingVertical:12,gap:18},reviewTitle:{flex:1,fontSize:20,fontWeight:'700',color:C.navy},thumb:{width:40,height:48,borderRadius:8,backgroundColor:C.border},summary:{backgroundColor:C.white,borderWidth:1,borderColor:C.border,borderRadius:16,padding:16,marginTop:4},merchant:{fontSize:16,color:C.navy,paddingVertical:8},line:{height:1,backgroundColor:C.border,marginVertical:12},pill:{flexDirection:'row',alignItems:'center',gap:5,backgroundColor:C.mint,borderRadius:20,paddingHorizontal:8,paddingVertical:6,marginTop:5},pillText:{fontSize:11,color:C.dark},item:{flexDirection:'row',alignItems:'center',gap:14,minHeight:58,borderBottomWidth:1,borderColor:C.border},price:{flexDirection:'row',alignItems:'center',backgroundColor:C.white,borderWidth:1,borderColor:C.border,borderRadius:8,paddingHorizontal:10,width:80},priceInput:{flex:1,textAlign:'right',fontSize:13,color:C.navy,paddingVertical:9,fontVariant:['tabular-nums']},link:{color:C.dark,fontSize:14,fontWeight:'600'},footer:{backgroundColor:C.white,borderTopWidth:1,borderColor:C.border,paddingHorizontal:24,paddingTop:22,paddingBottom:24},total:{fontSize:36,fontWeight:'700',color:C.navy,fontVariant:['tabular-nums']},error:{color:C.red,fontSize:13,marginBottom:12},overlay:{flex:1,backgroundColor:'#0008',justifyContent:'center',padding:24},dialog:{backgroundColor:C.white,borderRadius:16,padding:20,gap:16},option:{paddingVertical:12,borderBottomWidth:1,borderColor:C.border}
 });
